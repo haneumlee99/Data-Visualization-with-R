@@ -1,0 +1,475 @@
+---
+title: "STAT360 Final Project"
+author: "Claude Haneum Lee"
+date: "12/16/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(ggplot2)
+library(gganimate)
+library(rvest)
+library(plotly)
+library(readr)
+library(leaflet)
+library(geojsonio)
+library(DT)
+```
+
+
+# Q1: MN Covid Age Group Data
+
+## (a) Data Import
+
+```{r}
+mn <- html_table(html_nodes(read_html("https://www.health.state.mn.us/diseases/coronavirus/situation.html#ageg1"), "table")[[19]])
+datatable(mn)
+```
+
+
+## (b) Death Rate
+
+```{r}
+mn[,2] <- as.numeric(gsub(",", "", mn[,2]))
+mn <- mn %>% 
+  mutate(deathRate = round(`Number of Deaths` / `Number of Cases`, digits = 5))
+datatable(mn)
+```
+
+
+## (c) Bar Graph
+
+```{r}
+mn$`Age Group` <- factor(mn$`Age Group`, levels = mn$`Age Group`)
+
+ageDeathRate <- plot_ly(
+  mn,
+  x = ~`Age Group`,
+  y = ~`deathRate`,
+  type = "bar"
+)
+
+ageDeathRate <- ageDeathRate %>% 
+  layout(
+    title = "COVID Death Rate by Age Group in MN",
+    xaxis = list(title = "Age Group"),
+    yaxis = list(title = "Death Rate per Case")
+    )
+
+ageDeathRate
+```
+
+$~$
+
+# Q2: Presidential Election Data
+
+## (a) Data Import
+
+```{r}
+election<- as.data.frame(read_csv("Data/1976-2016-president.csv"))
+datatable(election)
+```
+
+
+## (b) Filter only Dem and Rep
+
+```{r}
+candidates <- election %>% 
+  filter(party %in% c("democrat", "republican"))
+datatable(candidates)
+```
+
+
+## (c) States with Consistent Advocacy
+
+```{r}
+datatable(candidates %>% 
+  
+  ## Filter out rows with winning candidates
+  group_by(state, year) %>%
+  filter(candidatevotes == max(candidatevotes)) %>% 
+  ungroup() %>% 
+  
+  ## Count how many each party won in each state
+  group_by(state) %>% 
+  summarize(DemCount = sum(party == "democrat"),
+            RepCount = sum(party == "republican"),
+            .groups = "drop") %>% 
+  
+  ## Filter out states that always had one party won
+  filter(
+    (DemCount == 0) | (RepCount == 0)
+  ) %>% 
+  mutate(Party = ifelse(DemCount == 0, "Republican", "Democrat")) %>% 
+  select(state, Party))
+
+```
+
+
+## (d) Swing States
+
+```{r}
+swing <- candidates %>% 
+  
+  ## Filter out rows with winning candidates
+  group_by(state, year) %>%
+  filter(candidatevotes == max(candidatevotes)) %>% 
+  ungroup() %>% 
+  
+  ## Get winning ratio
+  group_by(state) %>% 
+  summarize(D = sum(party == "democrat"),
+            R = sum(party == "republican"),
+            DRatio = round(sum(party == "democrat")/11, 2),
+            RRatio = round(sum(party == "republican")/11, 2),
+            .groups = "drop") %>% 
+  
+  ## Find swing states by each ratio
+  filter(
+    (between(DRatio, 0.4, 0.6)) | (between(RRatio, 0.4, 0.6))
+  ) 
+  
+swingplot <- plot_ly(swing, x = ~state, y = ~D, type = "bar", name = "Democrat Won", marker = list(color = "blue")) %>% 
+  add_trace(y = ~R, name = "Republican Won", marker = list(color = "red")) %>%
+  layout(yaxis = list(title = "Count", range = c(4.2, 6), dtick = 1),
+         title = "Swing States Winning Party Count",
+         xaxis = list(title = "State"))
+  
+swingplot
+```
+
+
+## (e) 2016 Winning Party Map
+
+```{r}
+won2016 <- candidates %>% 
+  
+  ## Filter out 2016 rows
+  filter(year == 2016) %>% 
+  
+  ## Filter out rows with winning candidates
+  group_by(state) %>%
+  filter(candidatevotes == max(candidatevotes)) %>% 
+  ungroup() %>% 
+  
+  ## Add Vote Ratio for visualization
+  mutate(ratio = round(candidatevotes/totalvotes, 2))
+
+
+# Plot Map
+
+## Extract State map JSON data
+states <- 
+  geojson_read( 
+    x = "https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json", 
+    what = "sp"
+  )
+
+## Set up basic outlines of map
+map2016 <- leaflet(states) %>%
+  setView(-96, 37.8, 4) %>%
+  addProviderTiles("MapBox", options = providerTileOptions(
+    id = "mapbox.light",
+    accessToken = Sys.getenv('MAPBOX_ACCESS_TOKEN')))
+
+## Set up color coding for state/party
+pal <- colorFactor(
+  palette = c("Blue", "Red"),
+  domain = won2016$party
+)
+
+## Set up hoover-over popup with party and vote ratio
+labels <- sprintf(
+  "<strong>%s</strong><br/>%s </strong><br/>Vote Ratio: %g",
+  won2016$state, won2016$party, won2016$ratio
+) %>% lapply(htmltools::HTML)
+
+## Plot Map
+map2016 %>% addPolygons(
+  
+  # Fill color and state outlines
+  fillColor = pal(won2016$party),
+  weight = 2,
+  opacity = 1,
+  color = "white",
+  dashArray = "3",
+  fillOpacity = 0.7,
+  
+  # Add hoover-over highlights on state outlines
+  highlight = highlightOptions(
+    weight = 5,
+    color = "#666",
+    dashArray = "",
+    fillOpacity = 0.7,
+    bringToFront = TRUE),
+  
+  # Add hoover-over popup label
+  label = labels,
+  labelOptions = labelOptions(
+    style = list("font-weight" = "normal", padding = "3px 8px"),
+    textsize = "15px",
+    direction = "auto")
+)
+```
+
+Mapping & Formatting Reference: https://rstudio.github.io/leaflet/choropleths.html
+
+
+## (f): Vote Percentage by Party per Year
+
+```{r}
+## Sum total votes per year
+voteperYear <- candidates %>% 
+  group_by(year, party) %>% 
+  summarize(PartyVote = sum(candidatevotes),
+            TotalVote = sum(totalvotes),
+            .groups = "drop") %>% 
+  mutate(votepct = round(PartyVote/TotalVote, 4)*100) 
+
+## Plot
+voteyear <- plot_ly(voteperYear, x = ~year, y = ~votepct, color = ~party, type = "scatter", mode = "scatter", colors = c("Blue", "Red")) %>% 
+  layout(yaxis = list(title = "Vote Percentage", ticksuffix = "%"),
+         title = "Vote Percentage by Party per Year", 
+         xaxis = list(title = "Election Year"))
+voteyear
+```
+
+$~$
+
+# Q3: High School Graduation Rates Data
+
+## (a) Data Extraction
+
+```{r}
+hs <- html_table(html_nodes(read_html("https://worldpopulationreview.com/state-rankings/high-school-graduation-rates-by-state"), "table")[[1]])
+hs[,2] <- as.numeric(sub("%", "", hs[,2])) / 100
+colnames(hs)[2] <- "HSGrad"
+datatable(hs)
+```
+
+
+## (b): Midwest States
+
+```{r}
+midwestHS <- hs %>% 
+  filter(State %in% c("Illinois", "Indiana", "Iowa", "Kansas", "Michigan", "Minnesota", "Missouri", 
+                      "Nebraska", "North Dakota", "Ohio", "South Dakota", "Wisconsin")) %>%
+  arrange(desc(HSGrad))
+midwestHS[,1] <- factor(midwestHS[,1], levels = midwestHS[,1])
+datatable(midwestHS)
+```
+
+
+## (c): Barplot with ggplot2
+
+```{r}
+ggplot(midwestHS, aes(x = State, y = HSGrad)) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::percent, breaks = c(seq(0.88, 0.93, 0.01))) +
+  coord_cartesian(ylim=c(0.87,0.93)) +
+  labs(title = "2020 High School Graduation Rate in Midwest", y = "Rate", x = "State") +
+  theme(plot.title = element_text(hjust = 0.5, size = 15),
+        axis.text.x = element_text(angle = 30, vjust = 0.7))
+```
+
+$~$
+
+# Q4: Most Common Cancers Data
+
+```{r}
+cancer <- data.frame(type = c("Lung", "Breast", "Colorectal", "Prostate", "Skin (Non-Melanoma)", "Stomach"),
+                     case = c(2.09, 2.09, 1.80, 1.28, 1.04, 1.03))
+
+cancer <- cancer %>% 
+  arrange(desc(case))
+cancer$type <- factor(cancer$type, levels = cancer$type)
+
+ggplot(cancer, aes(x = type, y = case)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(x = type, y = case, label = case), vjust = -0.3) +
+  scale_y_continuous(breaks = c(seq(1.0, 2.1, 0.2))) +
+  coord_cartesian(ylim=c(1, 2.1)) +
+  labs(title = "Most Common Cancers in 2018", y = "Cases in Million", x = "Type of Cancer") +
+  theme(plot.title = element_text(hjust = 0.5, size = 15))
+```
+
+$~$
+
+# Q5: MN Traffic Deaths in 2017 & 2018
+
+```{r}
+traffic <- data.frame(death = c(100, 88, 121, 113, 90, 78, 58, 53, 7, 6, 42, 42),
+                      type = factor(rep(c("Speed-Related", "Alcohol-Related", "Not Wearing \nSeat Belts", "Motorcyclists", "Bicyclists", "Pedestrians"),
+                                 rep(2, 6)), levels = c("Alcohol-Related", "Speed-Related", "Not Wearing \nSeat Belts", "Motorcyclists", "Pedestrians", "Bicyclists")),
+                      year = rep(c("2018", "2017"), 6))
+
+ggplot(traffic, aes(x = type, y = death, fill = year)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = death, color = year), position = position_dodge(width = 0.9), vjust = -0.3) +
+  labs(title = "Traffic Deaths on MN Roads in 2017 & 2018", y = "Number of Death", x = "Type of Death") +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1.2, size = 15),
+        axis.title.x = element_text(vjust = -0.2))
+```
+
+$~$
+
+# Q6: MN Water Quality Data
+
+## Data Import
+```{r}
+water <- read_csv("Data/WaterQualityMN.csv", 
+                  col_types = cols(PROJECT_ID = col_character(), 
+                                   END_DATE = col_date(format = "%m/%d/%y")))
+datatable(water)
+```
+
+
+## (a): Physical Condition Result Map
+
+```{r}
+## Filter out data to the most recent row & Remove duplicated rows
+water1 <- water[, c(3:7, 10, 12, 15, 16)] %>% 
+  group_by(LAKE_NAME) %>%
+  filter(END_DATE == max(END_DATE)) %>% 
+  filter(Physical_Condition_RESULT == max(Physical_Condition_RESULT)) %>% 
+  unique()
+
+## Set up Colored Marker
+phyCol <- colorFactor(palette = 'RdYlGn', water1$Physical_Condition_RESULT)
+
+## Plot map
+leaflet(water1) %>% 
+  addTiles() %>% 
+  addCircleMarkers(~longitude, ~latitude, color = ~phyCol(Physical_Condition_RESULT), 
+                   label = paste(water1$LAKE_NAME, ", Condition: ", water1$Physical_Condition_RESULT, sep = ""))
+
+```
+
+
+## (b): Secci Depth Result Boxplots
+
+```{r}
+water1$Physical_Condition_RESULT <- as.character(water1$Physical_Condition_RESULT)
+ggplot(water1, aes(x = Physical_Condition_RESULT, y = Secchi_Depth_RESULT, fill = Physical_Condition_RESULT)) +
+  geom_boxplot() +
+  labs(title = "MN Lakes Secchi Depth by Physical Condition", x = "Physical Condition", y = "Secchi Depth") +
+  theme(plot.title = element_text(hjust = 0.5, size = 15),
+        axis.title.x = element_text(vjust = -0.2),
+        legend.title = element_blank(),
+        legend.position = "none")
+```
+
+(Assuming 1 as worst and 5 as best,) based on the graph, we can see that lakes with higher physical condition tend to have lower secchi depth. Additionally, the variability of secchi depth increases as the lakes' physical condition decreases.
+
+$~$
+
+# Q7: Worldwide Smartphone Market Data
+
+## Data Extraction
+
+```{r}
+phone <- html_table(html_nodes(read_html("https://www.idc.com/promo/smartphone-market-share/vendor"), "table")[[1]])
+phone1 <- data.frame(company = rep(phone[,1], 9),
+                     quarter = rep(names(phone)[-1], rep(7, 9)),
+                     share = c(phone[,2], phone[,3], phone[,4], phone[,5],phone[,6], 
+                               phone[,7], phone[,8], phone[,9], phone[,10]))
+phone1$share <- as.numeric(gsub(",", ".", gsub("%", "", phone1$share)))
+phone1 <- phone1 %>% 
+  filter(!(company == "TOTAL"))
+
+datatable(phone1)
+```
+
+
+## Plot
+
+```{r}
+phoneMarket <- plot_ly(phone1, x = ~quarter, y = ~share, color = ~company, 
+                       type = "scatter", mode = "line")
+  
+
+phoneMarket <- phoneMarket %>% 
+  add_trace(x = ~quarter, y = ~share, color = ~company, frame = ~quarter,
+            type = "scatter", mode = "markers", 
+            marker = list(size = 10), showlegend = FALSE) %>% 
+  add_text(text = ~share, textposition = "top center", frame = ~quarter, showlegend = FALSE) %>% 
+  layout(yaxis = list(title = "Share %", ticksuffix = "%"),
+         title = "Smartphone Market Share", 
+         xaxis = list(title = "Quarter"))
+
+phoneMarket
+```
+
+$~$
+
+# Q8: Sales Data
+
+## (a): Data Import
+
+```{r}
+Sales <- read_csv("Data/Sales.csv", col_types = cols(Outlet_Establishment_Year = col_integer()))
+datatable(Sales)
+```
+
+
+## (b): IFC Bar Graph (levels of IFC, possible problem)
+
+```{r}
+ggplot(Sales, aes(x = Item_Fat_Content)) +
+  geom_bar() +
+  labs(title = "Item Fat Content", y = "Count", x = "Content Level") +
+  theme(plot.title = element_text(hjust = 0.5, size = 15))
+```
+
+There are 5 levels, but it seems like it should have been only two and `LF`, `low fat`, and `reg` were entered incorrectly. So, let's fix that now.
+
+
+```{r}
+for (i in 1:length(Sales$Item_Fat_Content)) {
+  if (Sales$Item_Fat_Content[i] %in% c("LF", "low fat")) {Sales$Item_Fat_Content[i] <- "Low Fat"}
+  else if (Sales$Item_Fat_Content[i] == "reg") {Sales$Item_Fat_Content[i] <- "Regular"}
+}
+
+ggplot(Sales, aes(x = Item_Fat_Content)) +
+  geom_bar() +
+  labs(title = "Item Fat Content", y = "Count", x = "Content Level") +
+  theme(plot.title = element_text(hjust = 0.5, size = 15))
+```
+
+
+## (c): IFC vs OT, colored by OLT
+
+Let's visualize this first by scatterplots and then barplot.
+
+```{r}
+ggplot(Sales, aes(x = Item_Fat_Content, y = Outlet_Type, color = Outlet_Location_Type)) +
+  geom_point(position = "jitter") +
+  labs(title = "Item Fat Content vs Outlet Type by Outlet Location Type", 
+       y = "Outlet Type", x = "Content Level", color = "Outlet Location Type") +
+  theme(plot.title = element_text(hjust = 0.5, size = 15))
+```
+
+
+```{r}
+ggplot(Sales, aes(x = Item_Fat_Content, fill = Outlet_Location_Type)) +
+  facet_wrap(~Outlet_Type, ncol = 4) +
+  geom_bar(position = "dodge") +
+  labs(title = "Item Fat Content vs Outlet Type by Outlet Location Type", 
+       y = "Count", x = "Content Level", fill = "Outlet Location Type") +
+  theme(plot.title = element_text(hjust = 0.5, size = 15)) +
+  scale_y_continuous(breaks = seq(0, 1300, 250))
+```
+
+
+## (d): IV vs IFC, colored by OT
+
+```{r}
+ggplot(Sales, aes(x = Item_Fat_Content, y = Item_Visibility, fill = Outlet_Type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Item Fat Content vs Visibility by Outlet Type", 
+       y = "Visibility", x = "Content Level", fill = "Outlet Type") +
+  theme(plot.title = element_text(hjust = 0.5, size = 15))
+```
+
